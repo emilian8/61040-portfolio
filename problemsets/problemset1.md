@@ -29,5 +29,65 @@ Add a flag on each registry or request, creating a new action: `setHidePurchases
 ### 7. Generic types
 `User` and `Item` are generic parameters so that the concept can be reused in different contexts and integrated with external systems which provides benefits like `Item` can map to SKU codes or product IDs, which are unique. On the other hand names, descriptions, and prices can change over time, leading to ambiguity and incorrect matches.
 
+## Exercise 2
+### 1. Concept state
 
+```text
+concept PasswordAuthentication
+purpose limit access to known users
+principle after a user registers with a username and a password,
+  they can authenticate with that same username and password
+  and be treated each time as the same user
+state
+  a set of Users with
+    username: String
+    password: String
+    confirmed: Flag
+  a set of PendingConfirmations with
+    username: String
+    token: String
+```
+### 2. Actions
+```
+actions
+  actions
+  register(username: String, password: String): (user: User, token: String)
+    requires no existing User with this username
+    effects
+      create User u:
+        u.username = username
+        u.passwordHash = Hash(password)
+        u.confirmed = false
+      create PendingConfirmations pc:
+        pc.username = username
+        pc.token = SecretRandom()
+      return user = u, token = pc.token
 
+  confirm(username: String, token: String)
+    requires exists PendingConfirmations pc with
+               pc.username = username and pc.token = token
+             and exists User u with u.username = username and u.confirmed = false
+    effects
+      set u.confirmed = true
+      delete pc
+
+  authenticate(username: String, password: String): (user: User)
+    requires exists User u with u.username = username
+             and u.confirmed = true
+             and password = u.password
+    effects
+      return user = u
+
+```
+### 3. Essential Invariant and Preservation
+
+Invariant: Username uniqueness & verifiable secret
+For all Users u1 != u2, u1.username != u2.username; and for each u, authentication does not succeed until b.confirmed = true
+
+Preservation:
+register enforces uniqueness by requiring no existing user with the username.
+confirm changes confirmed to true if successful
+authenticate does not mutate state and only succeeds if the password check passes and the user is confirmed.
+
+### 4. Extension
+Previous answers were modified to include the feature to require registration be confirmed by email.
