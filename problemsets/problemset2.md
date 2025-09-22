@@ -45,3 +45,156 @@ then UrlShortening.delete (shortUrl)
 
 
 ## Extending The Design
+
+### 1. Concepts
+First:
+````
+concept ShorteningOwnership [User]
+
+purpose tie each short URL to the user who created it (for access control)
+principle only the owner of a short URL can view its analytics
+state
+
+a set of Ownerships with
+
+shortUrl String
+
+owner User
+actions
+
+assignOwner (shortUrl: String, owner: User)
+effect: records that owner owns shortUrl
+
+getOwner (shortUrl: String): (owner: User)
+effect: returns the owner for shortUrl
+````
+Second:
+````
+concept AnalyticsCounts
+
+purpose count successful lookups per short URL
+principle every successful translation from a short URL to its target increments that short URL’s counter
+state
+
+a set of Counters with
+
+shortUrl String
+
+count Number
+actions
+
+init (shortUrl: String)
+effect: creates a counter for shortUrl at 0 (idempotent OK)
+
+increment (shortUrl: String)
+effect: adds 1 to the counter for shortUrl
+
+get (shortUrl: String): (count: Number)
+effect: returns the counter value
+````
+Third:
+````
+concept AnalyticsDelivery [User]
+
+purpose deliver analytics privately to a specific user
+principle analytics results are only delivered to the intended user
+state (none required)
+actions
+
+deliverCount (user: User, shortUrl: String, count: Number)
+effect: shows count for shortUrl only to user
+````
+
+Authentication: 
+```
+concept UserAuth
+
+purpose identify the current user (needed for access control)
+actions
+
+getCurrentUser (): (user: User)
+effect: returns the authenticated user making the request
+```
+
+
+### 2. Syncs
+When a shortening is created:
+```
+sync onRegister
+when
+  Request.shortenUrl (targetUrl, shortUrlBase)
+  UrlShortening.register (): (shortUrl)
+  UserAuth.getCurrentUser (): (user)
+then
+  ShorteningOwnership.assignOwner (shortUrl, user)
+  AnalyticsCounts.init (shortUrl)
+```
+When a shortening is translated:
+```
+sync onLookup
+when UrlShortening.lookup (shortUrl): (targetUrl)
+then AnalyticsCounts.increment (shortUrl)
+```
+When a user views analytics:
+```
+sync viewAnalytics
+when
+  Request.getAnalytics (shortUrl)
+  UserAuth.getCurrentUser (): (user)
+  ShorteningOwnership.getOwner (shortUrl): (owner)
+  AnalyticsCounts.get (shortUrl): (count)
+where user == owner
+then AnalyticsDelivery.deliverCount (user, shortUrl, count)
+```
+### 3. Modularity
+1. Allow an alternate request path that bypasses NonceGeneration. Add request: Request.customShorten (targetUrl, desiredSuffix, shortUrlBase). Ownership + analytics still handled by onRegister.
+```
+sync registerCustom
+when Request.customShorten (targetUrl, desiredSuffix, shortUrlBase)
+then UrlShortening.register (shortUrlSuffix: desiredSuffix, shortUrlBase, targetUrl)
+```
+
+2. Don’t change NonceGeneration, instead add a parallel generator concept and a policy sync. The tradeoff is better memorability vs. lower entropy per character.
+WordNonceGeneration [Context] with dictionary, k, and generate(context):(nonce) that returns a unique phrase per context.
+```
+sync generateNonce
+when Request.shortenUrl (shortUrlBase)
+then WordNonceGeneration.generate (context: shortUrlBase)
+```
+
+3. The issue is grouping purely by target could accidentally leak traffic if two users shorten the same target. A safer approach would be to group by (owner, targetUrl)
+```
+OwnerTargetCounts [User]
+
+state: tuples (owner, targetUrl, count)
+actions: initIfAbsent(owner, targetUrl), increment(owner, targetUrl), get(owner, targetUrl):(count)
+
+sync countByOwnerTarget
+when
+  UrlShortening.lookup (shortUrl): (targetUrl)
+  ShorteningOwnership.getOwner (shortUrl): (owner)
+then
+  OwnerTargetCounts.initIfAbsent (owner, targetUrl)
+  OwnerTargetCounts.increment (owner, targetUrl)
+```
+
+4. The way to approach this would be to add concept NonceQuality with action acceptable (nonce: String): (ok: Flag) using rules and add sync that regenerates until acceptable:
+````
+sync qualityGate
+when
+  Request.shortenUrl (targetUrl, shortUrlBase)
+  NonceGeneration.generate (context: shortUrlBase): (nonce)
+  NonceQuality.acceptable (nonce): (ok)
+where ok
+then
+  UrlShortening.register (shortUrlSuffix: nonce, shortUrlBase, targetUrl)
+````
+If ok is false, this sync doesn’t fire; a separate sync could loop (requesting another generate) or you can phrase NonceGeneration.generate to always be called by a “nonce picker” concept that enforces the policy.
+
+
+5. This would be harder to implement because we use UserAuth to check users and ownership. I think this would be undesirable because it creates security issues and could lead to potential data leaks. This also may lead to some users not making accounts, which froma  product perspective isn't what we want, account creation should be pushed as it helps the ShorteningOwnership concept.
+
+
+
+
+
