@@ -128,3 +128,4 @@
 
 
 ## 2. UX Sketches and Journey
+![UI Sketch](uxsketchassignment3.png)
